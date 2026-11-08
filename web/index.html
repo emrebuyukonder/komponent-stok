@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Komponent Stok</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    Komponent Stok
+  </div>
+  <nav class="tabs">
+    <button class="tab" data-view="stock">Stok</button>
+    <button class="tab" data-view="order">Sipariş girişi</button>
+    <button class="tab" data-view="bom">Proje / BOM</button>
+    <button class="tab" data-view="history">Geçmiş</button>
+  </nav>
+  <button class="btn primary" id="btn-new">+ Yeni parça</button>
+</header>
+
+<main>
+  <section id="view-stock" class="view">
+    <aside class="side" id="cat-list"></aside>
+    <div class="main">
+      <div class="toolbar">
+        <input id="search" type="search" placeholder="Ara: MPN, değer, kılıf, açıklama, konum…" autocomplete="off">
+        <span id="stock-count" class="muted"></span>
+        <a class="btn ghost" href="/api/export.csv">CSV dışa aktar</a>
+      </div>
+      <div class="table-wrap"><table class="grid" id="stock-table"></table></div>
+    </div>
+  </section>
+  <section id="view-order" class="view import" data-kind="order"></section>
+  <section id="view-bom" class="view import" data-kind="bom"></section>
+  <section id="view-history" class="view"><div id="history"></div></section>
+</main>
+
+<dialog id="modal"></dialog>
+<div id="toast" role="status"></div>
+<script src="app.js"></script>
+</body>
+</html>

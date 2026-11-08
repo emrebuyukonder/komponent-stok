@@ -1,0 +1,14 @@
+# Kişisel stok verisi — depoya girmez
+stok.db
+stok.db-journal
+*.db
+
+# Derleme çıktıları (./uygulamayi_derle.sh ile yeniden üretilir)
+Komponent Stok.app/
+bin/
+
+# macOS / editör
+.DS_Store
+.vscode/
+__pycache__/
+*.pyc

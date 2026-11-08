@@ -1,0 +1,13 @@
+LCSC Part Number,Manufacture Part Number,Manufacturer,Customer NO.,Package,Description,RoHS,Order Qty.,Min\Mult Order Qty.,Unit Price($),Order Price($)
+C25804,0603WAF1002T5E,UNI-ROYAL(Uniroyal Elec),,0603,10kΩ ±1% 100mW 0603 Thick Film Resistors,YES,100,100\100,0.0007,0.07
+C23138,0603WAF330JT5E,UNI-ROYAL(Uniroyal Elec),,0603,330Ω ±1% 100mW 0603 Thick Film Resistors,YES,100,100\100,0.0007,0.07
+C14663,CC0603KRX7R9BB104,YAGEO,,0603,100nF 50V X7R ±10% 0603 Multilayer Ceramic Capacitors MLCC - SMD/SMT,YES,200,100\100,0.0015,0.30
+C19702,CL10A106KP8NNNC,Samsung Electro-Mechanics,,0603,10uF 10V X5R ±10% 0603 Multilayer Ceramic Capacitors MLCC - SMD/SMT,YES,50,50\50,0.006,0.30
+C6186,AMS1117-3.3,Advanced Monolithic Systems,,SOT-223,Fixed 3.3V 1A Positive Fixed 15V SOT-223 Linear Voltage Regulators (LDO),YES,10,1\1,0.12,1.20
+C8734,STM32F103C8T6,STMicroelectronics,,LQFP-48(7x7),ARM Cortex-M3 64KB 72MHz LQFP-48(7x7) Microcontrollers (MCU/MPU/SOC),YES,5,1\1,2.10,10.50
+C20917,AO3400A,Alpha & Omega Semicon,,SOT-23,30V 5.7A 1.4W 26.5mΩ@10V N Channel SOT-23 MOSFETs,YES,20,5\5,0.03,0.60
+C2286,KT-0603R,Hubei KENTO Elec,,0603,Red 0603 Light Emitting Diodes (LED),YES,50,50\50,0.005,0.25
+C9002,X322508MSB4SI,Yangxing Tech,,SMD3225-4P,8MHz Crystal ±20ppm 20pF SMD3225-4P Crystals,YES,10,5\5,0.07,0.70
+C165948,TYPE-C-31-M-12,Korean Hroparts Elec,,SMD,USB 2.0 Type-C 16P Female SMD USB Connectors,YES,5,1\1,0.17,0.85
+C318884,TS-1187A-B-A-B,XKB Connectivity,,SMD-4P,SPST 50mA 12V SMD Tactile Switches,YES,10,5\5,0.02,0.20
+,,,,,,,,,Total,15.04
