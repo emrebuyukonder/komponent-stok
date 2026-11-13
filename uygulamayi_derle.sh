@@ -8,13 +8,26 @@ BUILD="$(mktemp -d)"
 trap 'rm -rf "$BUILD"' EXIT
 
 echo "Derleniyor…"
-swiftc -O -swift-version 5 -target arm64-apple-macos11.3 macos/main.swift -o "$BUILD/arm64" -framework Cocoa -framework WebKit
-swiftc -O -swift-version 5 -target x86_64-apple-macos11.3 macos/main.swift -o "$BUILD/x86_64" -framework Cocoa -framework WebKit
-lipo -create "$BUILD/arm64" "$BUILD/x86_64" -output "$BUILD/KomponentStok"
-swiftc -O -swift-version 5 -target arm64-apple-macos11.3 macos/ocr.swift -o "$BUILD/ocr-arm64" -framework Vision
-swiftc -O -swift-version 5 -target x86_64-apple-macos11.3 macos/ocr.swift -o "$BUILD/ocr-x86_64" -framework Vision
+# Önce arm64 derlenir; Intel (x86_64) derlemesi denenir, araç zinciri desteklemiyorsa (yeni Swift
+# sürümleri eski macOS hedefi için x86_64 bağlayamayabiliyor) yalnızca arm64 ile devam edilir.
+build() {  # build <kaynak> <çıktı adı> <framework...>
+  local src=$1 out=$2; shift 2
+  local fw=() archs=()
+  for f in "$@"; do fw+=(-framework "$f"); done
+  swiftc -O -swift-version 5 -target arm64-apple-macos11.3 "$src" -o "$BUILD/$out-arm64" "${fw[@]}"
+  archs+=("$BUILD/$out-arm64")
+  if swiftc -O -swift-version 5 -target x86_64-apple-macos11.3 "$src" -o "$BUILD/$out-x86_64" "${fw[@]}" \
+      2>"$BUILD/$out-x86_64.log"; then
+    archs+=("$BUILD/$out-x86_64")
+  else
+    echo "Uyarı: $out için Intel (x86_64) derlenemedi; yalnızca Apple Silicon sürümü oluşturuluyor." >&2
+  fi
+  lipo -create "${archs[@]}" -output "$BUILD/$out"
+}
+build macos/main.swift KomponentStok Cocoa WebKit
+build macos/ocr.swift ocr Vision
 mkdir -p bin
-lipo -create "$BUILD/ocr-arm64" "$BUILD/ocr-x86_64" -output bin/ocr   # terminal sürümü (python3 stok.py) için
+cp "$BUILD/ocr" bin/ocr   # terminal sürümü (python3 stok.py) için
 
 echo "Simge çiziliyor…"
 swiftc -O macos/icon.swift -o "$BUILD/icon" -framework Cocoa
