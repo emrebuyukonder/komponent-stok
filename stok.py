@@ -736,6 +736,10 @@ def analyze(kind, rows, mapping=None, header_row=None):
 
         cat_exact = next((c for c in CATEGORIES if c.lower() == cat_raw.lower()), None)
         category = cat_exact or classify(' '.join([cat_raw, desc, mpn, val_raw, pkg_raw]), designators)
+        if not cat_exact and category == 'Konnektörler' and designators and \
+                all(re.match(r'(U|IC)\d', d, re.I) for d in designators):
+            # "DIP-8_W7.62mm_Socket": parça entegre, soket yalnızca footprint'in bir özelliği
+            category = classify(' '.join([cat_raw, desc, mpn, val_raw]), designators)
 
         value = val_raw
         if category in UNIT_FOR_CATEGORY:
@@ -764,7 +768,7 @@ def analyze(kind, rows, mapping=None, header_row=None):
 
         items.append({
             'mpn': mpn, 'supplier_pn': spn, 'manufacturer': mfr, 'description': desc,
-            'category': category, 'value': value, 'package': package, 'qty': qty,
+            'category': category, 'value': value, 'package': package, 'package_raw': pkg_raw, 'qty': qty,
             'designators': designators, 'skip_reason': skip, 'pack': pack,
             'attrs': passive_attrs(' '.join([pkg_raw, desc, val_raw, cat_raw, mpn]), category, designators),
         })
@@ -876,18 +880,183 @@ def passive_match(item, ia, c):
     return score, why
 
 
-def find_candidates(item, comps):
+# ---------------------------------------------------------------- Konnektör profili
+# KiCad footprint adları ("JST_XH_B2B-XH-A_1x02_P2.50mm_Vertical") ile mağaza açıklamaları
+# ("JST-XH 2.54mm Soketli 2 Pin Düz Tunik Konnektör") aynı özellik setine indirgenir:
+# aile, sıra × pin, adım (mm), yön ve "kablo/fiş mi" bilgisi. Eşleştirme bu profiller üzerinden yapılır.
+
+# (aile, desen, varsayılan adım)
+CONN_FAMILIES = [
+    ('JST-XH', r'\bjst[ _-]?xh\b|\bxh[ _-]?\d|\b[bs]\d{1,2}b-xh|\bxh\b', 2.5),
+    ('JST-EH', r'\bjst[ _-]?eh\b|\b[bs]\d{1,2}b-eh|\beh\b(?=.*jst)', 2.5),
+    ('JST-PH', r'\bjst[ _-]?ph\b|\b[bs]\d{1,2}b-ph|\bph\b(?=.*jst)', 2.0),
+    ('JST-ZH', r'\bjst[ _-]?zh\b|\b[bs]\d{1,2}b-zr', 1.5),
+    ('JST-SH', r'\bjst[ _-]?sh\b|\bsm\d{2}b-srss', 1.0),
+    ('JST-GH', r'\bjst[ _-]?gh\b|\bsm\d{2}b-ghs', 1.25),
+    ('JST-VH', r'\bjst[ _-]?vh\b|\b[bs]\d{1,2}p-vh', 3.96),
+    ('Molex-KK', r'\bmolex[ _-]?kk\b|\bkk[ _-]?254\b', 2.54),
+    ('PinHeader', r'pin[ _-]?header|erkek[ _-]?header|male[ _-]?header|header[ _-]?erkek|\bpin[ _-]?strip', 2.54),
+    ('PinSocket', r'pin[ _-]?socket|dişi[ _-]?header|female[ _-]?header|header[ _-]?dişi', 2.54),
+    ('IDC', r'\bidc\b|box[ _-]?header|idc[ _-]?header', 2.54),
+    ('DIP-Socket', r'dip[ _-]?(soket|socket)|\bdip-?\d+.*socket|(soket|socket).*\bdip|\d+ pin dip', 2.54),
+    ('TerminalBlock', r'terminal[ _-]?block|terminalblock|klemens|screw[ _-]?terminal|vidalı', 5.0),
+    ('USB-C', r'usb[ _-]?(type[ _-]?)?c\b|type[ _-]?c\b', 0),
+    ('Micro-USB', r'micro[ _-]?usb|usb[ _-]?micro', 0),
+    ('USB-A', r'usb[ _-]?a\b|usb[ _-]?type[ _-]?a', 0),
+    ('BarrelJack', r'barrel|barreljack|dc[ _-]?jack|güç jakı|dc[ _-]?soket', 0),
+    ('AudioJack', r'audio[ _-]?jack|\bjack[ _-]?3\.5|3\.5 ?mm.*(jak|jack)|6\.3 ?mm.*(jak|jack)|stereo jak|mono jak', 0),
+    ('LED-Holder', r'led (tutucu|holder)', 0),
+]
+CONN_FAMILY_RXS = [(name, re.compile(rx), pitch) for name, rx, pitch in CONN_FAMILIES]
+CABLE_RX = re.compile(r'kablo|cable|\bwire\b|terminalsiz|housing|crimp|\bfiş\b|\bplug\b|\bkonut')
+
+
+def conn_profile(text):
+    """Metinden konnektör profili çıkarır. Aile bulunamazsa None."""
+    t = (text or '').replace('İ', 'i').lower()
+    t = re.sub(r'[:/\\|]+', ' ', t)
+    fam, pitch = None, 0.0
+    for name, rx, default_pitch in CONN_FAMILY_RXS:
+        if rx.search(t):
+            fam, pitch = name, default_pitch
+            break
+    if not fam:
+        return None
+    rows, pins = 1, 0
+    m = re.search(r'(?<![\d.])(\d{1,2})x(\d{1,2})(?![\d.]|mm)', t)  # 1x02, 2x05, Conn_01x04
+    if m:
+        rows, pins = int(m.group(1)), int(m.group(1)) * int(m.group(2))
+    else:
+        m = (re.search(r'\b[bs](\d{1,2})[bp]-', t)  # B2B-XH-A, S3B-PH-K, B4P-VH
+             or re.search(r'(?<![\d.])(\d{1,2})\s*-?\s*(?:pin|pinli|pos|way|yollu|li|lı|p)\b', t)
+             or re.search(r'\bdip-?(\d{1,2})(?!\d)', t))
+        if m:
+            pins = int(m.group(1))
+    m = re.search(r'(?<![\d.])p?(\d{1,2}(?:\.\d{1,2})?)\s?mm\b', t)
+    if m and fam not in ('BarrelJack', 'AudioJack'):
+        pitch = float(m.group(1))
+    orient = ''
+    if re.search(r'horizontal|yatay|right[ _-]?angle|açılı|90 ?(derece|°)|\bra\b|_h\b', t):
+        orient = 'H'
+    elif re.search(r'vertical|dikey|\bdüz\b|straight|\bdik\b|_v\b', t):
+        orient = 'V'
+    return {'family': fam, 'rows': rows, 'pins': pins, 'pitch': pitch, 'orient': orient,
+            'cable': bool(CABLE_RX.search(t))}
+
+
+def comp_profile(c):
+    return conn_profile(' '.join([c['value'], c['package'], c['description'], c['mpn'], c['notes']]))
+
+
+def pitch_same(a, b):
+    """2.50 ↔ 2.54 mm gibi yuvarlama farklarını aynı sayar."""
+    return abs(a - b) < 0.06
+
+
+def profile_score(ip, cp):
+    """BOM satırının profili (ip) ile stoktaki parçanın profili (cp) karşılaştırılır.
+    (puan, gerekçe) döner; parçalar birbirinin yerine kullanılamıyorsa None.
+    Puan ≥ 55 → otomatik eşleşir, ≥ 80 → "emin" sayılır (attach_matches'e bakın)."""
+    if ip['family'] != cp['family']:
+        return None
+    if cp['cable'] and not ip['cable']:
+        return None  # karttaki sokete karşılık kablo / fiş önerilmez
+    if ip['pins'] and cp['pins'] and ip['pins'] != cp['pins']:
+        return None
+    if ip['pitch'] and cp['pitch'] and not pitch_same(ip['pitch'], cp['pitch']):
+        return None
+    if ip['rows'] != cp['rows'] and ip['pins'] and cp['pins']:
+        return None  # 1x10 ile 2x05 aynı pin sayısı ama farklı parça
+    fam = ip['family']
+    if not (ip['pins'] and cp['pins']):
+        # Pin sayısı bir tarafta bilinmiyor; USB-C, barrel jack gibi pinsiz ailelerde bu normal
+        if ip['pins'] or cp['pins'] or fam in ('PinHeader', 'PinSocket', 'TerminalBlock', 'IDC') or fam.startswith('JST'):
+            return 50, f'{fam} (pin sayısı belirsiz — kontrol edin)'
+        score, why = 80, f'{fam} aynı'
+    else:
+        score, why = 85, f"{fam} {cp['rows']}x{cp['pins'] // cp['rows']:02d} aynı"
+    if ip['orient'] and cp['orient']:
+        if ip['orient'] != cp['orient']:
+            return min(score, 50), why + ' — ⚠ yön farklı (dikey/yatay)'
+        score, why = score + 5, why + (', dikey' if cp['orient'] == 'V' else ', yatay')
+    elif ip['orient'] and not cp['orient']:
+        score, why = score - 15, why + ' (yön belirsiz)'
+    return score, why
+
+
+def kicad_suggestion(c):
+    """Stoktaki parça için KiCad tarzı ad önerisi: {'value': ..., 'package': ...} ya da None."""
+    if c['category'] != 'Konnektörler':
+        return None
+    p = comp_profile(c)
+    if not p or p['cable'] or not p['pins']:
+        return None
+    n, rows = p['pins'], p['rows']
+    per_row = n // rows if rows else n
+    v = 'Vertical' if p['orient'] != 'H' else 'Horizontal'
+    fam = p['family']
+    pkg = ''
+    if fam in ('JST-XH', 'JST-EH', 'JST-PH'):
+        f = fam[-2:]
+        suffix = {'XH': '-A', 'EH': '-A' if v == 'Vertical' else '', 'PH': '-K'}[f]
+        bs = 'B' if v == 'Vertical' else 'S'
+        pitch = 2.0 if f == 'PH' else 2.5
+        pkg = f'JST_{f}_{bs}{n}B-{f}{suffix}_1x{n:02d}_P{pitch:.2f}mm_{v}'
+    elif fam in ('PinHeader', 'PinSocket'):
+        pkg = f'{fam}_{rows}x{per_row:02d}_P{p["pitch"] or 2.54:.2f}mm_{v}'
+    elif fam == 'DIP-Socket':
+        pkg = f'DIP-{n}_W7.62mm_Socket'
+    elif fam == 'TerminalBlock':
+        pkg = f'TerminalBlock_1x{n:02d}_P{p["pitch"] or 5.0:.2f}mm'
+    if not pkg:
+        return None
+    return {'value': f'Conn_{rows:02d}x{per_row:02d}' if fam != 'DIP-Socket' else f'DIP-{n} Socket',
+            'package': pkg}
+
+
+def rename_suggestions(comps):
+    """Etiketi yalnızca tedarikçi kodu / açıklama olan parçalar için KiCad tarzı ad önerileri."""
+    out = []
+    for c in comps:
+        new = {}
+        s = kicad_suggestion(c)
+        if s:
+            new.update({k: v for k, v in s.items() if c[k] != v})
+        if not c['mpn'] and c['category'] not in UNIT_FOR_CATEGORY and c['category'] != 'Konnektörler':
+            m = mpn_from_text(c['description'])
+            if m:
+                new['mpn'] = m
+        if c['category'] in UNIT_FOR_CATEGORY and not c['value']:
+            v = normalize_value(c['description'], c['category'], strict=True)
+            if v:
+                new['value'] = v
+        if new:
+            out.append({'id': c['id'], 'old': {k: c[k] for k in new}, 'new': new})
+    return out
+
+
+def alias_key(category, value, package):
+    return f'{category}|{key(value)}|{key(package)}'
+
+
+def find_candidates(item, comps, aliases=None):
     i_mpn, i_spn, i_val = key(item['mpn']), key(item['supplier_pn']), key(item['value'])
     passive = item['category'] in UNIT_FOR_CATEGORY
     item['_vn'] = normalize_value(item['value'], item['category']) if item['value'] else ''
     item['_pkg'] = normalize_package(item['package'], fallback=True) if item['package'] else ''
     ia = item.get('attrs') or passive_attrs(' '.join([item['package'], item['description'], item['value']]),
                                             item['category'], item.get('designators', ()))
+    remembered = (aliases or {}).get(alias_key(item['category'], item['value'], item['package']))
+    # Profil yalnızca konnektör satırlarında kullanılır (U1'in footprint'i "DIP-8_Socket" olsa da parça entegredir)
+    ip = None if item['category'] != 'Konnektörler' else conn_profile(' '.join([item['value'], item.get('package_raw') or item['package'],
+                                                     item['description']]))
     out = []
     for c in comps:
         c_mpn, c_spn = key(c['mpn']), key(c['supplier_pn'])
         score, why = 0, ''
-        if i_mpn and i_mpn == c_mpn:
+        if remembered == c['id']:
+            score, why = 100, 'daha önce siz eşleştirdiniz'
+        elif i_mpn and i_mpn == c_mpn:
             score, why = 100, 'MPN aynı'
         elif i_spn and i_spn == c_spn:
             score, why = 95, 'tedarikçi kodu aynı'
@@ -899,6 +1068,8 @@ def find_candidates(item, comps):
             r = passive_match(item, ia, c)
             if r:
                 score, why = r
+        elif ip and c['category'] == 'Konnektörler' and (cp := comp_profile(c)) and (r := profile_score(ip, cp)):
+            score, why = r
         elif i_val and len(i_val) >= 6 and c_mpn and _wildcard_match(i_val, c_mpn):
             score, why = 75, 'MPN benzer'
         elif i_val and len(i_val) >= 4 and re.search(r'\d', i_val) and c_mpn.startswith(i_val):
@@ -913,9 +1084,9 @@ def find_candidates(item, comps):
             elif item['_pkg'] and c_pkg and key(item['_pkg']) == key(c_pkg):
                 score, why = 40, 'aynı kategori ve kılıf'
         if score:
-            out.append({'id': c['id'], 'score': score, 'reason': why})
+            out.append({'id': c['id'], 'score': score, 'reason': why, '_q': c['quantity']})
     item.pop('_vn'); item.pop('_pkg')
-    out.sort(key=lambda x: -x['score'])
+    out.sort(key=lambda x: (-x['score'], -x.pop('_q')))  # eşit puanda stoğu fazla olan önce
     return out[:8]
 
 
@@ -926,9 +1097,9 @@ def _wildcard_match(pattern, mpn):
     return all(p == m or (p == 'X' and i >= 4) for i, (p, m) in enumerate(zip(pattern, mpn)))
 
 
-def attach_matches(items, comps):
+def attach_matches(items, comps, aliases=None):
     for it in items:
-        cands = find_candidates(it, comps)
+        cands = find_candidates(it, comps, aliases)
         it['candidates'] = cands
         it['match_id'] = cands[0]['id'] if cands and cands[0]['score'] >= 55 else None
         if not it['match_id']:
@@ -955,6 +1126,8 @@ CREATE TABLE IF NOT EXISTS transactions(
   id INTEGER PRIMARY KEY, batch_id INTEGER NOT NULL, component_id INTEGER NOT NULL, delta INTEGER NOT NULL,
   label TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '', created_at TEXT);
 CREATE INDEX IF NOT EXISTS tx_batch ON transactions(batch_id);
+CREATE TABLE IF NOT EXISTS aliases(
+  key TEXT PRIMARY KEY, component_id INTEGER NOT NULL, created_at TEXT);
 """
 TEXT_FIELDS = ['mpn', 'supplier_pn', 'manufacturer', 'description', 'category', 'value', 'package', 'location', 'notes']
 
@@ -1073,6 +1246,7 @@ def api_delete(db, cid):
     with DB_LOCK, db:
         get_comp(db, cid)
         db.execute('DELETE FROM components WHERE id=?', (cid,))
+        db.execute('DELETE FROM aliases WHERE component_id=?', (cid,))
     return {'ok': True}
 
 
@@ -1092,6 +1266,24 @@ def api_adjust(db, cid, data):
     return {'delta': actual}
 
 
+def api_rename_suggest(db, _):
+    comps = [dict(r) for r in db.execute('SELECT * FROM components ORDER BY category, id')]
+    return {'suggestions': rename_suggestions(comps)}
+
+
+def api_rename_apply(db, data):
+    changes = data.get('changes') or []
+    with DB_LOCK, db:
+        for ch in changes:
+            cid = int(ch.get('id'))
+            get_comp(db, cid)
+            f = {k: v for k, v in clean_fields(ch.get('fields') or {}).items() if k in ('mpn', 'value', 'package')}
+            if f:
+                db.execute(f"UPDATE components SET {', '.join(f'{k}=?' for k in f)}, updated_at=? WHERE id=?",
+                           list(f.values()) + [now(), cid])
+    return {'updated': len(changes)}
+
+
 def api_preview(db, data):
     kind = data.get('kind')
     if kind not in ('order', 'bom'):
@@ -1102,7 +1294,8 @@ def api_preview(db, data):
     hr = data.get('header_row')
     res = analyze(kind, rows, data.get('mapping'), None if hr is None else int(hr))
     comps = [dict(r) for r in db.execute('SELECT * FROM components')]
-    attach_matches(res['items'], comps)
+    aliases = {r['key']: r['component_id'] for r in db.execute('SELECT * FROM aliases')} if kind == 'bom' else {}
+    attach_matches(res['items'], comps, aliases)
     res['fields'] = FIELD_LABELS
     return res
 
@@ -1150,6 +1343,11 @@ def api_commit(db, data):
             need, labels, shortages = {}, {}, []
             for it in items:
                 q = parse_qty(str(it.get('qty', 0))) * mult
+                if it.get('action') == 'match' and it.get('learn'):
+                    # Elle seçilen eşleşme hatırlanır: aynı değer + footprint bir dahaki BOM'da otomatik eşleşir
+                    db.execute('INSERT OR REPLACE INTO aliases(key, component_id, created_at) VALUES(?,?,?)',
+                               (alias_key(it.get('category', ''), it.get('value', ''), it.get('package', '')),
+                                int(it['component_id']), now()))
                 if it.get('action') == 'match' and q:
                     cid = int(it['component_id'])
                     need[cid] = need.get(cid, 0) + q
@@ -1223,6 +1421,8 @@ ROUTES = [
     ('PUT', r'/api/components/(\d+)', lambda db, m, d: api_update(db, int(m[1]), d)),
     ('DELETE', r'/api/components/(\d+)', lambda db, m, d: api_delete(db, int(m[1]))),
     ('POST', r'/api/components/(\d+)/adjust', lambda db, m, d: api_adjust(db, int(m[1]), d)),
+    ('GET', r'/api/rename/suggest', lambda db, m, d: api_rename_suggest(db, d)),
+    ('POST', r'/api/rename/apply', lambda db, m, d: api_rename_apply(db, d)),
     ('POST', r'/api/import/preview', lambda db, m, d: api_preview(db, d)),
     ('POST', r'/api/import/commit', lambda db, m, d: api_commit(db, d)),
     ('GET', r'/api/batches', lambda db, m, d: api_batches(db, d)),
