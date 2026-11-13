@@ -290,6 +290,8 @@ function bindImport(kind, sec) {
     readFiles(e.dataTransfer.files);
   });
   sec.addEventListener('click', (e) => {
+    const pk = e.target.closest('[data-pick]');
+    if (pk) return openPicker(kind, +pk.dataset.pick);
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (!act) return;
     if (act === 'paste') {
@@ -389,25 +391,155 @@ function mappingPanel(st) {
     </div></details>`;
 }
 
-function matchSelect(it, i, kind) {
-  const cur = it.action === 'match' ? 'c:' + it.component_id : it.action;
-  const candIds = new Set(it.candidates.map((c) => c.id));
-  let h = `<select class="match" data-i="${i}" data-f="match">`;
-  h += kind === 'order' ? opt('new', '+ Yeni parça olarak ekle', cur) : opt('none', '✕ Stokta yok', cur);
+// ------------------------------------------------------------ eşleşme seçici (kategorili açılır pencere)
+function pickButton(it, i) {
+  let text = 'Atlandı', cls = 'skip';
+  if (it.action === 'match') { const c = byId(it.component_id); text = c ? label(c) : '?'; cls = ''; }
+  else if (it.action === 'new') { text = '+ Yeni parça olarak ekle'; cls = 'new'; }
+  else if (it.action === 'none') { text = '✕ Stokta yok'; cls = 'none'; }
+  const cand = it.action === 'match' && it.confidence !== 'user' && it.candidates.find((c) => c.id === it.component_id);
+  return `<button type="button" class="pick ${cls}" data-pick="${i}" title="Değiştirmek için tıklayın">
+      <span class="pick-text">${esc(text)}</span><span class="caret">▾</span></button>
+    ${cand ? `<div class="hint muted">${esc(cand.reason)}</div>` : ''}${it.confidence === 'user' ? '<div class="hint muted">Elle seçildi</div>' : ''}`;
+}
+
+let P = null; // açık seçici durumu
+function compHay(c) {
+  return lower([label(c), c.mpn, c.supplier_pn, c.manufacturer, c.description, c.value, c.package, c.location, c.notes].join(' '));
+}
+
+function openPicker(kind, i) {
+  const it = S.imp[kind].items[i];
   const cands = it.candidates.filter((c) => byId(c.id));
-  if (cands.length) {
-    h += '<optgroup label="Önerilen eşleşmeler">' + cands.map((c) => {
-      const comp = byId(c.id);
-      return opt('c:' + c.id, `${label(comp)} — ${c.reason} (stok ${comp.quantity})`, cur);
-    }).join('') + '</optgroup>';
+  P = { kind, i, q: '', cat: cands.length ? '__cand' : (S.comps.some((c) => c.category === it.category) ? it.category : '__all') };
+  const what = [it.designators?.join(', '), it.mpn || it.value, it.package_raw || it.package, it.description]
+    .filter(Boolean).join(' · ');
+  const special = (act, text, cls = '') => `<button type="button" class="btn sm ${cls}" data-special="${act}">${text}</button>`;
+  openModal(`<div class="picker">
+    <div class="pk-head">
+      <div class="pk-title"><h2>Stoktaki karşılığını seçin</h2><div class="muted small" title="${esc(what)}">${esc(what)}</div></div>
+      <button type="button" class="icon-btn" data-close title="Kapat">✕</button>
+    </div>
+    <div class="pk-search">
+      <input type="search" id="pk-q" placeholder="Ara: değer, pin sayısı, kılıf, açıklama, kod…" autocomplete="off" autofocus>
+      ${kind === 'order' ? special('new', '+ Yeni parça') : special('none', '✕ Stokta yok', 'danger')}
+      ${special('skip', 'Atla')}
+    </div>
+    <div class="pk-body"><nav class="pk-cats side"></nav><div class="pk-list"></div></div>
+  </div>`);
+  modal().classList.add('wide');
+  renderPicker();
+  const q = $('#pk-q');
+  q.addEventListener('input', () => { P.q = q.value; if (P.q.trim() && P.cat === '__cand') P.cat = '__all'; renderPicker(); });
+  q.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const first = $('.pk-row', modal());
+    if (first) pickChoose(+first.dataset.cid);
+  });
+}
+
+function renderPicker() {
+  const it = S.imp[P.kind].items[P.i];
+  const words = lower(P.q).trim().split(/\s+/).filter(Boolean);
+  const ok = (c) => !words.length || words.every((w) => compHay(c).includes(w));
+  const candById = Object.fromEntries(it.candidates.map((c) => [c.id, c]));
+  const cands = it.candidates.map((c) => byId(c.id)).filter((c) => c && ok(c));
+  const pool = S.comps.filter(ok);
+  const counts = {};
+  pool.forEach((c) => (counts[c.category] = (counts[c.category] || 0) + 1));
+  if (!P.cat.startsWith('__') && !counts[P.cat] && words.length) P.cat = '__all';
+
+  const nb = (k, text, n) => `<button type="button" data-pcat="${esc(k)}" class="${P.cat === k ? 'active' : ''}">
+    <span>${esc(text)}</span><span class="count">${n}</span></button>`;
+  $('.pk-cats', modal()).innerHTML =
+    (it.candidates.length ? nb('__cand', '★ Önerilenler', cands.length) : '') +
+    nb('__all', 'Tümü', pool.length) + '<hr>' +
+    S.cats.filter((c) => counts[c]).map((c) => nb(c, c + (c === it.category ? ' •' : ''), counts[c])).join('');
+
+  const cur = it.action === 'match' ? it.component_id : null;
+  const row = (c) => {
+    const cand = candById[c.id];
+    const sub = [c.mpn && c.value ? c.value : '', c.description !== label(c) ? c.description : '', c.supplier_pn !== label(c) ? c.supplier_pn : '']
+      .filter(Boolean).join(' · ');
+    return `<button type="button" class="pk-row ${c.id === cur ? 'sel' : ''}" data-cid="${c.id}">
+      <span class="pk-main"><b>${esc(label(c))}</b>${sub ? `<span class="sub">${esc(sub)}</span>` : ''}</span>
+      ${cand ? `<span class="pill ${cand.score >= 80 ? 'ok' : cand.score >= 55 ? 'info' : 'mute'}" title="Eşleşme puanı ${cand.score}">${esc(cand.reason)}</span>` : ''}
+      <span class="pk-pkg muted small">${esc(c.package && c.package !== label(c) ? c.package : '')}</span>
+      <span class="pk-qty ${c.quantity ? '' : 'out'}">${c.quantity} ad.</span>
+    </button>`;
+  };
+  let html = '';
+  if (P.cat === '__cand') {
+    html = cands.map(row).join('');
+  } else {
+    const list = P.cat === '__all' ? pool : pool.filter((c) => c.category === P.cat);
+    const catOrder = Object.fromEntries(S.cats.map((c, k) => [c, c === it.category ? -1 : k]));
+    list.sort((a, b) => (catOrder[a.category] ?? 99) - (catOrder[b.category] ?? 99) || label(a).localeCompare(label(b), 'tr', { numeric: true }));
+    let last = null;
+    html = list.map((c) => {
+      const head = P.cat === '__all' && c.category !== last ? `<div class="pk-group">${esc((last = c.category))}</div>` : '';
+      return head + row(c);
+    }).join('');
   }
-  const fmt = (c) => opt('c:' + c.id, `${label(c)}${c.package && c.mpn ? ' ' + c.package : ''} (stok ${c.quantity})`, cur);
-  const same = S.comps.filter((c) => c.category === it.category && !candIds.has(c.id));
-  const other = S.comps.filter((c) => c.category !== it.category && !candIds.has(c.id));
-  if (same.length) h += `<optgroup label="${esc(it.category)}">${same.map(fmt).join('')}</optgroup>`;
-  if (other.length) h += `<optgroup label="Diğer parçalar">${other.map(fmt).join('')}</optgroup>`;
-  h += opt('skip', kind === 'order' ? 'Atla' : 'Atla (takılmayacak)', cur);
-  return h + '</select>';
+  $('.pk-list', modal()).innerHTML = html || '<div class="empty">Eşleşen parça yok.</div>';
+}
+
+function pickChoose(cid, special) {
+  const it = S.imp[P.kind].items[P.i];
+  if (special) it.action = special;
+  else { it.action = 'match'; it.component_id = cid; it.confidence = 'user'; }
+  const kind = P.kind;
+  modal().close();
+  renderPreview(kind);
+}
+
+modal().addEventListener('click', (e) => {
+  if (!P || !modal().classList.contains('wide')) return;
+  const t = e.target;
+  if (t.closest('[data-close]')) return modal().close();
+  const pc = t.closest('[data-pcat]');
+  if (pc) { P.cat = pc.dataset.pcat; return renderPicker(); }
+  const r = t.closest('[data-cid]');
+  if (r) return pickChoose(+r.dataset.cid);
+  const sp = t.closest('[data-special]');
+  if (sp) pickChoose(null, sp.dataset.special);
+});
+modal().addEventListener('close', () => { modal().classList.remove('wide'); P = null; });
+
+// ------------------------------------------------------------ KiCad tarzı yeniden adlandırma
+async function openRename() {
+  let sug;
+  try { ({ suggestions: sug } = await api('/api/rename/suggest')); } catch (e) { return fail(e); }
+  if (!sug.length) return toast('Önerilecek yeni ad yok — stoktaki adlar zaten düzgün görünüyor');
+  const FL = { mpn: 'MPN', value: 'Değer', package: 'Kılıf' };
+  const rows = sug.map((s, k) => {
+    const c = byId(s.id);
+    return `<tr><td><input type="checkbox" data-rn="${k}" checked></td>
+      <td class="part"><b>${esc(label(c))}</b><div class="sub">${esc(c.description)}</div></td>
+      <td>${Object.entries(s.new).map(([f, v]) => `<div class="small"><span class="muted">${FL[f]}:</span> ${s.old[f] ? `<s class="muted">${esc(s.old[f])}</s> → ` : ''}<b>${esc(v)}</b></div>`).join('')}</td></tr>`;
+  }).join('');
+  openModal(`<form method="dialog" id="rn-form"><div class="modal-body">
+    <h2>KiCad tarzı adlandırma</h2>
+    <p class="muted small">Açıklamalardan çıkarılan bilgilerle (aile, pin sayısı, adım, yön…) parçalara KiCad kütüphanesine benzer
+      değer ve kılıf adı önerilir. Böylece stok listesinde "20259" gibi kodlar yerine anlamlı adlar görünür ve BOM eşleşmesi kolaylaşır.
+      Tedarikçi kodu ve açıklama değişmez.</p>
+    <div class="table-wrap rn-wrap"><table class="grid"><thead><tr><th></th><th>Parça</th><th>Önerilen</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </div><div class="modal-foot"><span class="spacer"></span>
+      <button type="button" class="btn" onclick="modal().close()">Vazgeç</button>
+      <button type="submit" class="btn primary">Seçilenleri uygula</button></div></form>`);
+  modal().classList.add('wide');
+  $('#rn-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const changes = sug.filter((_, k) => $(`[data-rn="${k}"]`).checked).map((s) => ({ id: s.id, fields: s.new }));
+    try {
+      const r = await api('/api/rename/apply', { method: 'POST', body: { changes } });
+      modal().close();
+      await loadComps();
+      render();
+      toast(`${r.updated} parça yeniden adlandırıldı`);
+    } catch (err) { fail(err); }
+  });
 }
 
 function partCell(it) {
@@ -438,7 +570,7 @@ function orderPreview(st) {
       <td><input type="text" class="w-s" data-i="${i}" data-f="value" value="${esc(it.value)}"></td>
       <td><input type="text" class="w-s" data-i="${i}" data-f="package" value="${esc(it.package)}"></td>
       <td class="num"><input type="number" class="w-n" min="0" data-i="${i}" data-f="qty" value="${it.qty}"></td>
-      <td>${matchSelect(it, i, 'order')}
+      <td>${pickButton(it, i)}
         ${warn ? '<div class="hint warn">Emin değilim — kontrol edin</div>' : ''}
         ${it.skip_reason ? `<div class="hint warn">${esc(it.skip_reason)}</div>` : ''}
         ${it.pack > 1 ? `<div class="hint muted">${it.pack}'li paket: adet, paket sayısı × ${it.pack} olarak hesaplandı</div>` : ''}</td>
@@ -517,7 +649,7 @@ function bomPreview(st) {
       <td class="num">${it.action === 'skip' ? '—' : it.qty * st.mult}</td>
       <td class="num">${c ? c.quantity : '—'}</td>
       <td><span class="pill ${s.cls}">${s.text}</span></td>
-      <td>${matchSelect(it, i, 'bom')}${warn ? '<div class="hint warn">Emin değilim — kontrol edin</div>' : ''}
+      <td>${pickButton(it, i)}${warn ? '<div class="hint warn">Emin değilim — kontrol edin</div>' : ''}
         ${it.action === 'none' && it.candidates.length && byId(it.candidates[0].id) ? `<div class="hint">Alternatif: ${esc(label(byId(it.candidates[0].id)))} — ${esc(it.candidates[0].reason)}</div>` : ''}</td>
     </tr>`;
   }).join('');
@@ -568,7 +700,7 @@ async function commit(kind) {
   const items = st.items.map((it) => ({
     action: it.action, component_id: it.component_id, qty: it.qty,
     mpn: it.mpn, supplier_pn: it.supplier_pn, manufacturer: it.manufacturer, description: it.description,
-    category: it.category, value: it.value, package: it.package,
+    category: it.category, value: it.value, package: it.package, learn: it.confidence === 'user',
     label: it.mpn || it.value || it.description,
   }));
   if (kind === 'bom') {
@@ -626,6 +758,7 @@ document.querySelector('.tabs').addEventListener('click', (e) => {
   if (t) setView(t.dataset.view);
 });
 $('#btn-new').addEventListener('click', () => openEdit(null));
+$('#btn-rename').addEventListener('click', openRename);
 $('#cat-list').addEventListener('click', (e) => {
   const b = e.target.closest('[data-cat]');
   if (b) { S.cat = b.dataset.cat; renderStock(); }
@@ -650,6 +783,7 @@ $('#history').addEventListener('click', async (e) => {
   } catch (err) { fail(err); }
 });
 modal().addEventListener('click', (e) => { if (e.target === modal()) modal().close(); });
+
 
 (async () => {
   try { S.view = localStorage.getItem('stok.view') || 'stock'; } catch (e) { /* yoksay */ }
